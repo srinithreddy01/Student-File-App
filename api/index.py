@@ -16,6 +16,8 @@ CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 def get_db():
     db_url = os.environ.get('POSTGRES_URL', '')
+    if not db_url:
+        raise ValueError("POSTGRES_URL environment variable is MISSING. Please connect Vercel Postgres in the Vercel Dashboard -> Storage.")
     if db_url.startswith('postgres://'):
         db_url = db_url.replace('postgres://', 'postgresql://', 1)
     conn = psycopg2.connect(db_url)
@@ -23,40 +25,43 @@ def get_db():
 
 
 def init_db():
-    conn = get_db()
-    cursor = conn.cursor()
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            password BYTEA NOT NULL
-        )
-    """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password BYTEA NOT NULL
+            )
+        """)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS folders (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            user_id INTEGER NOT NULL REFERENCES users(id),
-            parent_id INTEGER REFERENCES folders(id),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS folders (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                parent_id INTEGER REFERENCES folders(id),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS files (
-            id SERIAL PRIMARY KEY,
-            filename TEXT NOT NULL,
-            user_id INTEGER REFERENCES users(id),
-            folder_id INTEGER REFERENCES folders(id),
-            blob_url TEXT,
-            uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS files (
+                id SERIAL PRIMARY KEY,
+                filename TEXT NOT NULL,
+                user_id INTEGER REFERENCES users(id),
+                folder_id INTEGER REFERENCES folders(id),
+                blob_url TEXT,
+                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"DB init failed: {e}")
 
 
 try:
@@ -73,6 +78,8 @@ BLOB_API = "https://blob.vercel-storage.com"
 
 def upload_blob(file_data, filename):
     token = os.environ.get('BLOB_READ_WRITE_TOKEN', '')
+    if not token:
+        raise ValueError("BLOB_READ_WRITE_TOKEN is MISSING. Please connect Vercel Blob in the Vercel Dashboard -> Storage.")
     resp = requests.put(
         f"{BLOB_API}/{filename}",
         data=file_data,
@@ -87,6 +94,8 @@ def upload_blob(file_data, filename):
 
 def delete_blob(url):
     token = os.environ.get('BLOB_READ_WRITE_TOKEN', '')
+    if not token:
+        return
     requests.post(
         f"{BLOB_API}/delete",
         json={"urls": [url]},
@@ -103,13 +112,13 @@ def delete_blob(url):
 
 @app.route("/api/register", methods=["POST"])
 def register():
-    data = request.json
-    username = data.get("username")
-    password = data.get("password")
-
-    hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-
     try:
+        data = request.json
+        username = data.get("username")
+        password = data.get("password")
+
+        hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute(
@@ -121,27 +130,32 @@ def register():
         return jsonify({"message": "User registered successfully!"})
     except psycopg2.IntegrityError:
         return jsonify({"error": "Username already exists"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/login", methods=["POST"])
 def login():
-    data = request.json
-    username = data.get("username")
-    password = data.get("password")
+    try:
+        data = request.json
+        username = data.get("username")
+        password = data.get("password")
 
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id, password FROM users WHERE username=%s",
-        (username,)
-    )
-    user = cursor.fetchone()
-    conn.close()
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, password FROM users WHERE username=%s",
+            (username,)
+        )
+        user = cursor.fetchone()
+        conn.close()
 
-    if user and bcrypt.checkpw(password.encode("utf-8"), bytes(user[1])):
-        return jsonify({"message": "Login successful", "user_id": user[0]})
-    else:
-        return jsonify({"error": "Invalid credentials"}), 401
+        if user and bcrypt.checkpw(password.encode("utf-8"), bytes(user[1])):
+            return jsonify({"message": "Login successful", "user_id": user[0]})
+        else:
+            return jsonify({"error": "Invalid credentials"}), 401
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ------------------------
 # FOLDER ROUTES
